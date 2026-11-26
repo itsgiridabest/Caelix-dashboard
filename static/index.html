@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>Caelix Dashboard</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body data-theme="dark">
     <header class="topbar">
       <div class="brand">
         <span class="brand__mark" aria-hidden="true"></span>
@@ -17,11 +17,20 @@
       <div class="topbar__meta">
         <span class="chip" id="hostname">—</span>
         <span class="muted" id="updated">connecting…</span>
+        <button
+          type="button"
+          class="icon-button"
+          id="settings-open"
+          aria-label="Open settings"
+          title="Settings"
+        >
+          ⚙
+        </button>
       </div>
     </header>
 
-    <main class="grid">
-      <section class="card card--weather" aria-labelledby="weather-title">
+    <main class="grid" id="grid">
+      <section class="card card--weather" data-widget="weather" aria-labelledby="weather-title">
         <div class="card__head">
           <h2 id="weather-title">Weather</h2>
           <button type="button" class="link-button" id="weather-change" hidden>Change</button>
@@ -58,7 +67,7 @@
               <p class="muted" id="weather-desc">—</p>
             </div>
           </div>
-          <dl class="weather__facts">
+          <dl class="facts">
             <div><dt>Feels like</dt><dd id="weather-feels">—</dd></div>
             <div><dt>Humidity</dt><dd id="weather-humidity">—</dd></div>
             <div><dt>Wind</dt><dd id="weather-wind">—</dd></div>
@@ -66,16 +75,17 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="cpu-title">
+      <section class="card" data-widget="cpu" aria-labelledby="cpu-title">
         <div class="card__head">
           <h2 id="cpu-title">CPU</h2>
           <span class="muted" id="cpu-sub">—</span>
         </div>
         <p class="metric"><span id="cpu-value">—</span><span class="unit">%</span></p>
+        <canvas class="spark" id="cpu-spark" height="46" aria-hidden="true"></canvas>
         <div class="bar"><div class="bar__fill" id="cpu-bar" style="width: 0%"></div></div>
       </section>
 
-      <section class="card" aria-labelledby="memory-title">
+      <section class="card" data-widget="memory" aria-labelledby="memory-title">
         <div class="card__head">
           <h2 id="memory-title">Memory</h2>
           <span class="muted" id="memory-sub">—</span>
@@ -84,7 +94,7 @@
         <div class="bar"><div class="bar__fill" id="memory-bar" style="width: 0%"></div></div>
       </section>
 
-      <section class="card" aria-labelledby="disk-title">
+      <section class="card" data-widget="disk" aria-labelledby="disk-title">
         <div class="card__head">
           <h2 id="disk-title">Disk</h2>
           <span class="muted" id="disk-sub">—</span>
@@ -93,7 +103,7 @@
         <div class="bar"><div class="bar__fill" id="disk-bar" style="width: 0%"></div></div>
       </section>
 
-      <section class="card" aria-labelledby="network-title">
+      <section class="card" data-widget="network" aria-labelledby="network-title">
         <div class="card__head">
           <h2 id="network-title">Network</h2>
           <span class="muted" id="uptime">—</span>
@@ -108,20 +118,95 @@
             <dd><span id="net-up">—</span> <small class="muted" id="net-up-total"></small></dd>
           </div>
         </dl>
+        <canvas class="spark spark--sm" id="net-spark" height="38" aria-hidden="true"></canvas>
       </section>
 
-      <section class="card" aria-labelledby="hermes-title">
+      <section class="card" data-widget="temperature" aria-labelledby="temperature-title">
+        <div class="card__head">
+          <h2 id="temperature-title">Temperature</h2>
+          <span class="muted" id="temp-label">—</span>
+        </div>
+        <p class="metric"><span id="temp-value">—</span><span class="unit" id="temp-unit">°C</span></p>
+        <div class="bar"><div class="bar__fill" id="temp-bar" style="width: 0%"></div></div>
+      </section>
+
+      <section class="card" data-widget="hermes" aria-labelledby="hermes-title">
         <div class="card__head">
           <h2 id="hermes-title">Hermes gateway</h2>
           <span class="pill pill--unknown" id="hermes-pill">checking…</span>
         </div>
         <p class="muted small" id="hermes-detail">—</p>
       </section>
+
+      <section class="card" data-widget="system" aria-labelledby="system-title">
+        <div class="card__head">
+          <h2 id="system-title">System</h2>
+          <span class="muted" id="system-machine">—</span>
+        </div>
+        <dl class="facts facts--stack">
+          <div><dt>Board</dt><dd id="system-board">—</dd></div>
+          <div><dt>OS</dt><dd id="system-os">—</dd></div>
+          <div><dt>Kernel</dt><dd id="system-kernel">—</dd></div>
+        </dl>
+      </section>
     </main>
 
     <footer class="footer">
-      Local only · no AI calls · refreshes every 20&nbsp;s
+      Local only · no AI calls · <span id="refresh-note">refreshes every 20 s</span>
     </footer>
+
+    <dialog class="settings" id="settings" aria-labelledby="settings-title">
+      <form method="dialog" class="settings__panel">
+        <header class="settings__head">
+          <h2 id="settings-title">Settings</h2>
+          <button class="icon-button" value="close" aria-label="Close settings" title="Close">
+            ✕
+          </button>
+        </header>
+
+        <div class="settings__body">
+          <fieldset>
+            <legend>Appearance</legend>
+            <label class="row">
+              <span>Theme</span>
+              <select id="setting-theme">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </label>
+            <label class="row">
+              <span>Units</span>
+              <select id="setting-units">
+                <option value="c">Metric · °C, km/h</option>
+                <option value="f">Imperial · °F, mph</option>
+              </select>
+            </label>
+            <label class="row">
+              <span>Refresh</span>
+              <select id="setting-interval">
+                <option value="10">Every 10 s</option>
+                <option value="20">Every 20 s</option>
+                <option value="30">Every 30 s</option>
+                <option value="60">Every 60 s</option>
+              </select>
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Widgets</legend>
+            <p class="settings__note muted small">
+              Untick to hide a card. Use the arrows to change its place on the grid.
+            </p>
+            <ul class="widget-list" id="widget-list"></ul>
+          </fieldset>
+        </div>
+
+        <footer class="settings__actions">
+          <button type="button" class="ghost" id="settings-reset">Reset</button>
+          <button class="primary" value="done">Done</button>
+        </footer>
+      </form>
+    </dialog>
 
     <script src="/app.js"></script>
   </body>

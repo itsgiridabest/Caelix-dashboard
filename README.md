@@ -4,13 +4,17 @@ A small, private status page for the Arduino UNO Q. It runs on the board's Debia
 side and shows, in one screen:
 
 - current weather for a place you choose
-- CPU load
+- CPU load, with a live two-minute sparkline
 - memory use
 - disk space
-- network download/upload activity
+- network download/upload rates and history
+- board/CPU temperature where the kernel exposes a sensor
+- board, OS and kernel details
 - whether the Hermes gateway is running
 
-It refreshes every 20 seconds, works on phones and desktops, and makes **no AI or
+A settings panel (gear icon) controls the theme, metric/imperial units, the
+refresh interval, and which widgets are shown and in what order. It refreshes
+every 20 seconds by default, works on phones and desktops, and makes **no AI or
 model calls**. Everything is standard-library Python 3 — no packages to install.
 
 ## Requirements
@@ -50,6 +54,22 @@ variables override it.
 cp config.example.json config.json   # optional, git-ignored
 CAELIX_PORT=9000 python3 server.py   # one-off override
 ```
+
+## Settings
+
+Open the gear icon in the top bar:
+
+- **Theme** — dark or light.
+- **Units** — metric (°C, km/h) or imperial (°F, mph), applied to the weather
+  card and the temperature widget.
+- **Refresh** — 10, 20, 30 or 60 seconds between polls.
+- **Widgets** — untick a card to hide it, use the arrows to change its order on
+  the grid.
+
+Settings live in the browser's `localStorage` (key `caelix.settings.v1`), so they
+are per device and are never written to the board. **Reset** restores the
+defaults; your weather location is kept until you press **Change** in the
+weather card.
 
 ## Weather and location privacy
 
@@ -98,7 +118,7 @@ no authentication, so it must never be forwarded to the open internet.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/status` | Hostname, uptime, load, CPU, memory, disk, network rates, Hermes state |
+| `GET /api/status` | Hostname, uptime, load, CPU (with history), memory, disk, network rates and history, temperature, system details, Hermes state |
 | `GET /api/weather?lat=&lon=` | Current conditions from Open-Meteo (cached 10 min) |
 | `GET /api/geocode?q=` | City lookup, up to 5 matches |
 
@@ -110,7 +130,7 @@ The page itself is served from `static/` (`/`, `/styles.css`, `/app.js`).
 server.py                       HTTP server, metrics sampler, weather proxy
 static/index.html               dashboard markup
 static/styles.css               dark responsive styles
-static/app.js                   polling, rendering, location setup
+static/app.js                   polling, rendering, charts, settings, location setup
 config.example.json             optional local settings
 systemd/caelix-dashboard.service  user unit for autostart
 ```
@@ -121,4 +141,7 @@ systemd/caelix-dashboard.service  user unit for autostart
 - Metrics are read from `/proc` and `statvfs`; CPU and network are sampled every
   2 seconds, the page polls every 20 seconds.
 - Weather is the only outbound request, and only after a location is set.
-- Restarting the service clears the in-memory weather/geocode cache.
+- Restarting the service clears the in-memory weather/geocode cache and the
+  sparkline history (the last ~3 minutes of samples).
+- Settings and the chosen weather location are stored in the browser, not on the
+  board; clearing site data returns the dashboard to its defaults.

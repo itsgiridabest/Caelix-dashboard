@@ -1,7 +1,26 @@
 "use strict";
 
-const REFRESH_MS = 20000;
-const LOCATION_KEY = "caelix.location";
+const STORAGE_SETTINGS = "caelix.settings.v1";
+const STORAGE_LOCATION = "caelix.location";
+const REFRESH_OPTIONS = [10, 20, 30, 60];
+
+const WIDGETS = [
+  { id: "weather", name: "Weather" },
+  { id: "cpu", name: "CPU" },
+  { id: "memory", name: "Memory" },
+  { id: "disk", name: "Disk" },
+  { id: "network", name: "Network" },
+  { id: "temperature", name: "Temperature" },
+  { id: "hermes", name: "Hermes gateway" },
+  { id: "system", name: "System" },
+];
+
+const DEFAULT_SETTINGS = {
+  theme: "dark",
+  units: "c",
+  interval: 20,
+  widgets: WIDGETS.map(({ id }) => ({ id, visible: true })),
+};
 
 const WEATHER_CODES = {
   0: ["Clear sky", "☀️"],
@@ -34,7 +53,16 @@ const WEATHER_CODES = {
   99: ["Thunderstorm with heavy hail", "⛈️"],
 };
 
+const state = {
+  settings: null,
+  timer: null,
+  lastStatus: null,
+  lastWeather: null,
+};
+
 const $ = (id) => document.getElementById(id);
+
+/* Formatting --------------------------------------------------------- */
 
 function fmtBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
@@ -69,9 +97,16 @@ function fmtNumber(value) {
   return Math.round(Number(value)).toString();
 }
 
+function formatPercent(value) {
+  return Number.isFinite(Number(value)) ? Math.round(Number(value)).toString() : "—";
+}
+
 function compass(degrees) {
   if (!Number.isFinite(degrees)) return "";
-  const points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+  const points = [
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+  ];
   return points[Math.round(degrees / 22.5) % 16];
 }
 
@@ -81,13 +116,222 @@ function setBar(element, percent) {
   element.dataset.level = value >= 90 ? "high" : value >= 70 ? "warn" : "ok";
 }
 
-function formatPercent(value) {
-  return Number.isFinite(Number(value)) ? Math.round(Number(value)).toString() : "—";
+function cssVar(name) {
+  return getComputedStyle(document.body).getPropertyValue(name).trim() || "#35d0ba";
 }
 
-function setUpdated(text) {
-  $("updated").textContent = text;
+function tempUnitLabel() {
+  return state.settings.units === "f" ? "°F" : "°C";
 }
+
+function windUnitLabel() {
+  return state.settings.units === "f" ? "mph" : "km/h";
+}
+
+function convertTemp(celsius) {
+  if (celsius === null || celsius === undefined) return null;
+  const value = Number(celsius);
+  return state.settings.units === "f" ? (value * 9) / 5 + 32 : value;
+}
+
+function convertWind(kmh) {
+  if (kmh === null || kmh === undefined) return null;
+  const value = Number(kmh);
+  return state.settings.units === "f" ? value * 0.621371 : value;
+}
+
+/* Charts -------------------------------------------------------------- */
+
+function drawSparkline(canvas, series) {
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+  }
+
+  const context = canvas.getContext("2d");
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const count = Math.max(0, ...series.map((line) => line.values.length));
+  if (count < 2) return;
+
+  const max = Math.max(1, ...series.flatMap((line) => line.values)) * 1.15;
+  const step = width / (count - 1);
+
+  for (const line of series) {
+    if (line.values.length < 2) continue;
+    const offset = count - line.values.length;
+
+    context.beginPath();
+    line.values.forEach((value, index) => {
+      const x = (offset + index) * step;
+      const y = height - 1 - (Math.min(Math.max(value, 0), max) / max) * (height - 2);
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.strokeStyle = line.color;
+    context.lineWidth = 1.6;
+    context.lineJoin = "round";
+    context.stroke();
+
+    context.lineTo(width, height);
+    context.lineTo(offset * step, height);
+    context.closePath();
+    context.globalAlpha = 0.14;
+    context.fillStyle = line.color;
+    context.fill();
+    context.globalAlpha = 1;
+  }
+}
+
+/* Settings ------------------------------------------------------------ */
+
+function loadSettings() {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(STORAGE_SETTINGS) || "null");
+  } catch {
+    stored = null;
+  }
+  if (!stored || typeof stored !== "object") return settings;
+
+  if (stored.theme === "light" || stored.theme === "dark") settings.theme = stored.theme;
+  if (stored.units === "c" || stored.units === "f") settings.units = stored.units;
+  if (REFRESH_OPTIONS.includes(Number(stored.interval))) {
+    settings.interval = Number(stored.interval);
+  }
+  if (Array.isArray(stored.widgets)) {
+    const known = new Set(WIDGETS.map((widget) => widget.id));
+    const seen = new Set();
+    const widgets = [];
+    for (const entry of stored.widgets) {
+      const id = entry && entry.id;
+      if (!known.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      widgets.push({ id, visible: entry.visible !== false });
+    }
+    for (const widget of WIDGETS) {
+      if (!seen.has(widget.id)) widgets.push({ id: widget.id, visible: true });
+    }
+    settings.widgets = widgets;
+  }
+  return settings;
+}
+
+function saveSettings() {
+  localStorage.setItem(STORAGE_SETTINGS, JSON.stringify(state.settings));
+}
+
+function applyTheme() {
+  document.body.dataset.theme = state.settings.theme;
+}
+
+function applyWidgets() {
+  const grid = $("grid");
+  for (const widget of state.settings.widgets) {
+    const card = document.querySelector(`[data-widget="${widget.id}"]`);
+    if (!card) continue;
+    card.hidden = !widget.visible;
+    grid.appendChild(card);
+  }
+}
+
+function scheduleRefresh() {
+  if (state.timer) clearInterval(state.timer);
+  const seconds = state.settings.interval;
+  state.timer = setInterval(() => {
+    loadStatus();
+    loadWeather();
+  }, seconds * 1000);
+  $("refresh-note").textContent = `refreshes every ${seconds} s`;
+}
+
+function commitSettings() {
+  saveSettings();
+  applyTheme();
+  applyWidgets();
+  renderSettings();
+  scheduleRefresh();
+  if (state.lastStatus) renderStatus(state.lastStatus);
+  if (state.lastWeather) renderWeather(state.lastWeather);
+}
+
+function stepButton(text, label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "step-button";
+  button.textContent = text;
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function moveWidget(index, delta) {
+  const widgets = state.settings.widgets;
+  const target = index + delta;
+  if (target < 0 || target >= widgets.length) return;
+  const [moved] = widgets.splice(index, 1);
+  widgets.splice(target, 0, moved);
+  commitSettings();
+}
+
+function renderSettings() {
+  const list = $("widget-list");
+  list.replaceChildren();
+
+  state.settings.widgets.forEach((widget, index) => {
+    const meta = WIDGETS.find((entry) => entry.id === widget.id);
+    if (!meta) return;
+
+    const row = document.createElement("li");
+    row.className = "widget-row";
+
+    const label = document.createElement("label");
+    label.className = "widget-row__label";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = widget.visible;
+    checkbox.addEventListener("change", () => {
+      widget.visible = checkbox.checked;
+      commitSettings();
+    });
+
+    const name = document.createElement("span");
+    name.textContent = meta.name;
+    label.append(checkbox, name);
+
+    const controls = document.createElement("div");
+    controls.className = "widget-row__controls";
+
+    const up = stepButton("↑", `Move ${meta.name} up`, () => moveWidget(index, -1));
+    up.disabled = index === 0;
+    const down = stepButton("↓", `Move ${meta.name} down`, () => moveWidget(index, 1));
+    down.disabled = index === state.settings.widgets.length - 1;
+
+    controls.append(up, down);
+    row.append(label, controls);
+    list.append(row);
+  });
+}
+
+function openSettings() {
+  $("setting-theme").value = state.settings.theme;
+  $("setting-units").value = state.settings.units;
+  $("setting-interval").value = String(state.settings.interval);
+  renderSettings();
+  $("settings").showModal();
+}
+
+/* Data ---------------------------------------------------------------- */
 
 async function fetchJson(url) {
   const response = await fetch(url, { cache: "no-store" });
@@ -103,9 +347,8 @@ async function fetchJson(url) {
   return payload;
 }
 
-/* Status ------------------------------------------------------------- */
-
 function renderStatus(data) {
+  state.lastStatus = data;
   $("hostname").textContent = data.hostname || "—";
 
   const cpu = data.cpu || {};
@@ -113,6 +356,7 @@ function renderStatus(data) {
   const load = (data.load || []).map((value) => Number(value).toFixed(2)).join(" ");
   $("cpu-sub").textContent = `${cpu.cores || "—"} cores${load ? ` · load ${load}` : ""}`;
   setBar($("cpu-bar"), cpu.percent);
+  drawSparkline($("cpu-spark"), [{ values: cpu.history || [], color: cssVar("--accent") }]);
 
   const memory = data.memory || {};
   $("memory-value").textContent = formatPercent(memory.percent);
@@ -130,29 +374,52 @@ function renderStatus(data) {
   $("net-down-total").textContent = `${fmtBytes(network.rx_total)} total`;
   $("net-up-total").textContent = `${fmtBytes(network.tx_total)} total`;
   $("uptime").textContent = `up ${fmtUptime(data.uptime_seconds)}`;
+  drawSparkline($("net-spark"), [
+    { values: network.rx_history || [], color: cssVar("--accent") },
+    { values: network.tx_history || [], color: cssVar("--info") },
+  ]);
+
+  const temperature = data.temperature;
+  if (temperature) {
+    $("temp-value").textContent = fmtNumber(convertTemp(temperature.celsius));
+    $("temp-unit").textContent = tempUnitLabel();
+    $("temp-label").textContent = temperature.label || "sensor";
+    setBar($("temp-bar"), temperature.celsius);
+  } else {
+    $("temp-value").textContent = "—";
+    $("temp-unit").textContent = "";
+    $("temp-label").textContent = "no sensor";
+    setBar($("temp-bar"), 0);
+  }
 
   const hermes = data.hermes || {};
   const pill = $("hermes-pill");
   pill.textContent = hermes.running ? "running" : "not running";
   pill.className = `pill ${hermes.running ? "pill--ok" : "pill--bad"}`;
   $("hermes-detail").textContent = hermes.detail || "—";
+
+  const system = data.system || {};
+  $("system-board").textContent = system.board || "—";
+  $("system-os").textContent = system.os || "—";
+  $("system-kernel").textContent = system.kernel || "—";
+  $("system-machine").textContent = system.machine || "—";
 }
 
 async function loadStatus() {
   try {
     const data = await fetchJson("/api/status");
     renderStatus(data);
-    setUpdated(`updated ${new Date().toLocaleTimeString()}`);
+    $("updated").textContent = `updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
-    setUpdated(`offline — ${error.message}`);
+    $("updated").textContent = `offline — ${error.message}`;
   }
 }
 
-/* Weather ------------------------------------------------------------ */
+/* Weather ------------------------------------------------------------- */
 
 function readLocation() {
   try {
-    const raw = localStorage.getItem(LOCATION_KEY);
+    const raw = localStorage.getItem(STORAGE_LOCATION);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (typeof parsed.lat === "number" && typeof parsed.lon === "number") return parsed;
@@ -163,11 +430,11 @@ function readLocation() {
 }
 
 function saveLocation(location) {
-  localStorage.setItem(LOCATION_KEY, JSON.stringify(location));
+  localStorage.setItem(STORAGE_LOCATION, JSON.stringify(location));
 }
 
 function clearLocation() {
-  localStorage.removeItem(LOCATION_KEY);
+  localStorage.removeItem(STORAGE_LOCATION);
 }
 
 function setHint(text) {
@@ -175,18 +442,19 @@ function setHint(text) {
 }
 
 function renderWeather(weather) {
+  state.lastWeather = weather;
   const [description, icon] = WEATHER_CODES[weather.code] || ["—", "🌡️"];
   const night = !weather.is_day;
-  const temperatureUnit = weather.temperature_unit || "°C";
+  const shownIcon = night && (icon === "☀️" || icon === "🌤️") ? "🌙" : icon;
 
-  $("weather-temp").textContent = fmtNumber(weather.temperature);
-  $("weather-unit").textContent = temperatureUnit;
+  $("weather-temp").textContent = fmtNumber(convertTemp(weather.temperature));
+  $("weather-unit").textContent = tempUnitLabel();
   $("weather-desc").textContent = description;
-  $("weather-icon").textContent = night ? (icon === "☀️" ? "🌙" : icon) : icon;
+  $("weather-icon").textContent = shownIcon;
   $("weather-feels").textContent =
     weather.apparent === null || weather.apparent === undefined
       ? "—"
-      : `${fmtNumber(weather.apparent)}${temperatureUnit}`;
+      : `${fmtNumber(convertTemp(weather.apparent))}${tempUnitLabel()}`;
   $("weather-humidity").textContent =
     weather.humidity === null || weather.humidity === undefined
       ? "—"
@@ -194,7 +462,9 @@ function renderWeather(weather) {
   $("weather-wind").textContent =
     weather.wind_speed === null || weather.wind_speed === undefined
       ? "—"
-      : `${Math.round(weather.wind_speed)} ${weather.wind_unit || "km/h"} ${compass(weather.wind_direction)}`.trim();
+      : `${Math.round(convertWind(weather.wind_speed))} ${windUnitLabel()} ${compass(
+          weather.wind_direction
+        )}`.trim();
 }
 
 async function loadWeather() {
@@ -259,18 +529,52 @@ function handleLocationChange() {
   $("weather-query").focus();
 }
 
-/* Boot --------------------------------------------------------------- */
+/* Boot ---------------------------------------------------------------- */
+
+state.settings = loadSettings();
+applyTheme();
+applyWidgets();
+renderSettings();
+scheduleRefresh();
+
+$("settings-open").addEventListener("click", openSettings);
+
+$("setting-theme").addEventListener("change", (event) => {
+  state.settings.theme = event.target.value;
+  commitSettings();
+});
+
+$("setting-units").addEventListener("change", (event) => {
+  state.settings.units = event.target.value;
+  commitSettings();
+});
+
+$("setting-interval").addEventListener("change", (event) => {
+  state.settings.interval = Number(event.target.value);
+  commitSettings();
+});
+
+$("settings-reset").addEventListener("click", () => {
+  state.settings = structuredClone(DEFAULT_SETTINGS);
+  $("setting-theme").value = state.settings.theme;
+  $("setting-units").value = state.settings.units;
+  $("setting-interval").value = String(state.settings.interval);
+  commitSettings();
+});
 
 $("weather-form").addEventListener("submit", handleLocationSubmit);
 $("weather-change").addEventListener("click", handleLocationChange);
 
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (state.lastStatus) renderStatus(state.lastStatus);
+  }, 150);
+});
+
 loadStatus();
 loadWeather();
-
-setInterval(() => {
-  loadStatus();
-  loadWeather();
-}, REFRESH_MS);
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {

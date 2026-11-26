@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -22,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -81,6 +83,9 @@ class Sampler(threading.Thread):
         self.tx_rate = 0.0
         self.rx_total = 0
         self.tx_total = 0
+        self.cpu_history: deque = deque(maxlen=90)
+        self.rx_history: deque = deque(maxlen=90)
+        self.tx_history: deque = deque(maxlen=90)
 
     def stop(self) -> None:
         self._stop.set()
@@ -116,6 +121,9 @@ class Sampler(threading.Thread):
                 "tx_rate": self.tx_rate,
                 "rx_total": self.rx_total,
                 "tx_total": self.tx_total,
+                "cpu_history": list(self.cpu_history),
+                "rx_history": list(self.rx_history),
+                "tx_history": list(self.tx_history),
             }
 
     def run(self) -> None:  # noqa: D102 - thread body
@@ -145,6 +153,9 @@ class Sampler(threading.Thread):
                 self.rx_rate = max(0.0, (rx - prev_rx) / elapsed)
                 self.tx_rate = max(0.0, (tx - prev_tx) / elapsed)
                 self.rx_total, self.tx_total = rx, tx
+                self.cpu_history.append(round(self.cpu_percent, 1))
+                self.rx_history.append(round(self.rx_rate, 1))
+                self.tx_history.append(round(self.tx_rate, 1))
             prev_total, prev_idle = total, idle
             prev_rx, prev_tx = rx, tx
             prev_time = now
@@ -185,6 +196,57 @@ def read_disk(path: str = "/") -> dict:
 def read_uptime() -> float:
     with open("/proc/uptime", encoding="ascii") as fh:
         return float(fh.readline().split()[0])
+
+
+def read_temperature() -> dict | None:
+    """First plausible thermal zone reading, or None on boards without one."""
+    try:
+        zones = sorted(Path("/sys/class/thermal").glob("thermal_zone*"))
+    except OSError:
+        return None
+    for zone in zones:
+        try:
+            celsius = int((zone / "temp").read_text().strip()) / 1000.0
+        except (OSError, ValueError):
+            continue
+        if not -20.0 <= celsius <= 150.0:
+            continue
+        try:
+            label = (zone / "type").read_text().strip() or zone.name
+        except OSError:
+            label = zone.name
+        return {"celsius": round(celsius, 1), "label": label, "zone": zone.name}
+    return None
+
+
+def read_system() -> dict:
+    board = None
+    for candidate in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
+        try:
+            board = Path(candidate).read_text(errors="replace").strip("\x00\n ") or None
+        except OSError:
+            continue
+        if board:
+            break
+
+    distro = None
+    try:
+        with open("/etc/os-release", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("PRETTY_NAME="):
+                    distro = line.split("=", 1)[1].strip().strip('"')
+                    break
+    except OSError:
+        pass
+
+    uname = os.uname()
+    return {
+        "board": board,
+        "os": distro,
+        "kernel": uname.release,
+        "machine": uname.machine,
+        "python": platform.python_version(),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -337,6 +399,7 @@ def build_status() -> dict:
         "cpu": {
             "percent": sampler.get("cpu_percent", 0.0),
             "cores": os.cpu_count() or 1,
+            "history": sampler.get("cpu_history", []),
         },
         "memory": read_memory(),
         "disk": read_disk(),
@@ -345,7 +408,11 @@ def build_status() -> dict:
             "tx_rate": round(sampler.get("tx_rate", 0.0), 1),
             "rx_total": sampler.get("rx_total", 0),
             "tx_total": sampler.get("tx_total", 0),
+            "rx_history": sampler.get("rx_history", []),
+            "tx_history": sampler.get("tx_history", []),
         },
+        "temperature": read_temperature(),
+        "system": read_system(),
         "hermes": check_hermes(
             CONFIG.get("hermes_unit", "hermes"),
             CONFIG.get("hermes_process_match", "hermes"),
