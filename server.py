@@ -256,6 +256,12 @@ def read_system() -> dict:
 _hermes_cache: dict = {"at": 0.0, "value": None}
 _hermes_lock = threading.Lock()
 
+# Shells and text tools often mention "hermes" without being the gateway.
+_WRAPPER_NAMES = {
+    "bash", "sh", "dash", "zsh", "fish", "ksh", "csh", "tcsh",
+    "sudo", "su", "grep", "pgrep", "systemctl", "git", "vi", "vim", "nano",
+}
+
 
 def check_hermes(unit: str, match: str) -> dict:
     now = time.monotonic()
@@ -287,17 +293,30 @@ def _probe_hermes(unit: str, match: str) -> dict:
         except (OSError, subprocess.SubprocessError):
             pass
 
+    own_pid = os.getpid()
     for entry in os.listdir("/proc"):
-        if not entry.isdigit():
+        if not entry.isdigit() or int(entry) == own_pid:
             continue
         try:
             raw = Path("/proc", entry, "cmdline").read_bytes()
         except OSError:
             continue
         cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
-        if match and match in cmdline:
+        if match and _command_matches(cmdline, match):
             return {"running": True, "detail": f"process {entry}: {cmdline[:80]}"}
     return {"running": False, "detail": "no matching service or process found"}
+
+
+def _command_matches(cmdline: str, match: str) -> bool:
+    """Match an executable name or path argument, not prose in a shell line."""
+    tokens = [token for token in cmdline.split() if token and not token.startswith("-")]
+    if not tokens:
+        return False
+    if os.path.basename(tokens[0]) in _WRAPPER_NAMES:
+        return False
+    if match in os.path.basename(tokens[0]):
+        return True
+    return any("/" in token and match in token for token in tokens[1:])
 
 
 # --------------------------------------------------------------------------
