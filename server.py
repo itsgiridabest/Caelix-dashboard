@@ -4,6 +4,7 @@
 Serves the dashboard in static/ plus a JSON API:
 
     GET /api/status              host metrics + Hermes gateway state
+    GET /api/usage               Codex CLI token use and rate limits (local logs)
     GET /api/weather?lat=&lon=   current weather (Open-Meteo, cached 10 min)
     GET /api/geocode?q=          city lookup (Open-Meteo geocoding)
 
@@ -24,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -37,6 +38,7 @@ DEFAULTS = {
     "port": 8080,
     "hermes_unit": "hermes",
     "hermes_process_match": "hermes",
+    "codex_home": "~/.codex",
 }
 
 USER_AGENT = "CaelixDashboard/1.0 (local Arduino UNO Q dashboard)"
@@ -44,6 +46,7 @@ WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_TTL = 600
 GEOCODE_TTL = 86400
+CODEX_USAGE_TTL = 60
 
 CONFIG = dict(DEFAULTS)
 SAMPLER: "Sampler | None" = None
@@ -320,6 +323,229 @@ def _command_matches(cmdline: str, match: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Codex CLI usage (read from the gateway's local rollout files)
+# --------------------------------------------------------------------------
+
+_usage_lock = threading.Lock()
+
+
+def _codex_home() -> Path:
+    raw = os.environ.get("CODEX_HOME") or CONFIG.get("codex_home") or "~/.codex"
+    return Path(os.path.expanduser(str(raw)))
+
+
+def _parse_timestamp(value) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _as_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _empty_usage() -> dict:
+    return {"input": 0, "cached": 0, "output": 0, "reasoning": 0, "total": 0, "requests": 0}
+
+
+def _add_usage(bucket: dict, usage: dict) -> None:
+    input_tokens = _as_int(usage.get("input_tokens"))
+    output_tokens = _as_int(usage.get("output_tokens"))
+    bucket["input"] += input_tokens
+    bucket["cached"] += _as_int(usage.get("cached_input_tokens"))
+    bucket["output"] += output_tokens
+    bucket["reasoning"] += _as_int(usage.get("reasoning_output_tokens"))
+    bucket["total"] += _as_int(usage.get("total_tokens")) or input_tokens + output_tokens
+    bucket["requests"] += 1
+
+
+def _rollout_files(sessions: Path, since: date) -> list[Path]:
+    """Walk only the YYYY/MM/DD folders inside the requested date range."""
+    files: list[Path] = []
+    try:
+        years = list(sessions.iterdir())
+    except OSError:
+        return files
+    for year_dir in years:
+        if not year_dir.is_dir() or not year_dir.name.isdigit():
+            continue
+        try:
+            months = list(year_dir.iterdir())
+        except OSError:
+            continue
+        for month_dir in months:
+            if not month_dir.is_dir() or not month_dir.name.isdigit():
+                continue
+            try:
+                days = list(month_dir.iterdir())
+            except OSError:
+                continue
+            for day_dir in days:
+                if not day_dir.is_dir() or not day_dir.name.isdigit():
+                    continue
+                try:
+                    folder_date = date(int(year_dir.name), int(month_dir.name), int(day_dir.name))
+                except ValueError:
+                    continue
+                if folder_date < since:
+                    continue
+                try:
+                    files.extend(day_dir.glob("rollout-*.jsonl"))
+                except OSError:
+                    continue
+    return files
+
+
+def _usage_limits(raw: dict | None) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+
+    def window(name: str) -> dict | None:
+        block = raw.get(name)
+        if not isinstance(block, dict) or block.get("used_percent") is None:
+            return None
+        try:
+            percent = round(float(block["used_percent"]), 1)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "used_percent": percent,
+            "window_minutes": block.get("window_minutes"),
+            "resets_at": block.get("resets_at"),
+        }
+
+    primary = window("primary")
+    secondary = window("secondary")
+    if primary is None and secondary is None:
+        return None
+    credits = raw.get("credits") if isinstance(raw.get("credits"), dict) else None
+    return {
+        "plan": raw.get("plan_type"),
+        "primary": primary,
+        "secondary": secondary,
+        "credits": (
+            {
+                "has_credits": credits.get("has_credits"),
+                "unlimited": credits.get("unlimited"),
+                "balance": credits.get("balance"),
+            }
+            if credits
+            else None
+        ),
+    }
+
+
+def read_codex_usage() -> dict:
+    """Aggregate token_count events from Codex CLI's local session rollouts."""
+    sessions = _codex_home() / "sessions"
+    now = datetime.now().astimezone()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=6)
+    month_start = today_start - timedelta(days=29)
+    cutoffs = {
+        "today": today_start.timestamp(),
+        "week": week_start.timestamp(),
+        "month": month_start.timestamp(),
+    }
+    buckets = {name: _empty_usage() for name in cutoffs}
+    limits = None
+    model = None
+    latest_at = None
+    files = _rollout_files(sessions, month_start.date())
+
+    for path in files:
+        previous_total = None
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if '"token_count"' not in line and '"turn_context"' not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_type = entry.get("type")
+                    payload = entry.get("payload")
+                    if not isinstance(payload, dict):
+                        continue
+                    if entry_type == "turn_context":
+                        if payload.get("model"):
+                            model = payload["model"]
+                        continue
+                    if entry_type != "event_msg" or payload.get("type") != "token_count":
+                        continue
+
+                    info = payload.get("info") or {}
+                    usage = info.get("last_token_usage") or payload.get("last_token_usage") or {}
+                    totals = info.get("total_token_usage") or payload.get("total_token_usage") or {}
+                    raw_total = totals.get("total_tokens")
+                    observed_total = _as_int(raw_total) if raw_total is not None else None
+
+                    if usage:
+                        delta = usage
+                    elif previous_total is not None and observed_total is not None:
+                        delta = {"total_tokens": max(0, observed_total - previous_total)}
+                    else:
+                        delta = None
+                    if observed_total is not None:
+                        previous_total = observed_total
+
+                    if delta:
+                        timestamp = _parse_timestamp(entry.get("timestamp"))
+                        stamp = timestamp.timestamp() if timestamp else time.time()
+                        for name, cutoff in cutoffs.items():
+                            if stamp >= cutoff:
+                                _add_usage(buckets[name], delta)
+                        if latest_at is None or stamp > latest_at:
+                            latest_at = stamp
+
+                    raw_limits = payload.get("rate_limits")
+                    if isinstance(raw_limits, dict):
+                        limits = raw_limits
+        except OSError:
+            continue
+
+    available = bool(files) and (buckets["month"]["requests"] > 0 or limits is not None)
+    result = {
+        "available": available,
+        "path": str(sessions),
+        "sessions": len(files),
+        "today": buckets["today"],
+        "week": buckets["week"],
+        "month": buckets["month"],
+        "limits": _usage_limits(limits),
+        "latest": {
+            "at": (
+                datetime.fromtimestamp(latest_at, timezone.utc).isoformat(timespec="seconds")
+                if latest_at
+                else None
+            ),
+            "model": model,
+        },
+    }
+    if not available:
+        result["reason"] = (
+            f"No Codex CLI sessions found under {sessions}"
+            if not files
+            else "Recent Codex CLI sessions contain no token counts"
+        )
+    return result
+
+
+def codex_usage() -> dict:
+    with _usage_lock:
+        return cached(("codex-usage",), CODEX_USAGE_TTL, read_codex_usage)
+
+
+# --------------------------------------------------------------------------
 # Weather (Open-Meteo, free, no API key)
 # --------------------------------------------------------------------------
 
@@ -456,6 +682,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             if parsed.path == "/api/status":
                 return self.send_json(build_status())
+            if parsed.path == "/api/usage":
+                return self.send_json(codex_usage())
             if parsed.path == "/api/weather":
                 return self.handle_weather(query)
             if parsed.path == "/api/geocode":

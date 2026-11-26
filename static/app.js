@@ -3,6 +3,8 @@
 const STORAGE_SETTINGS = "caelix.settings.v1";
 const STORAGE_LOCATION = "caelix.location";
 const REFRESH_OPTIONS = [10, 20, 30, 60];
+const THEMES = ["dark", "light", "cream", "ink"];
+const USAGE_INTERVAL = 60000;
 
 const WIDGETS = [
   { id: "weather", name: "Weather" },
@@ -12,6 +14,7 @@ const WIDGETS = [
   { id: "network", name: "Network" },
   { id: "temperature", name: "Temperature" },
   { id: "hermes", name: "Hermes gateway" },
+  { id: "usage", name: "Hermes usage" },
   { id: "system", name: "System" },
 ];
 
@@ -203,7 +206,7 @@ function loadSettings() {
   }
   if (!stored || typeof stored !== "object") return settings;
 
-  if (stored.theme === "light" || stored.theme === "dark") settings.theme = stored.theme;
+  if (THEMES.includes(stored.theme)) settings.theme = stored.theme;
   if (stored.units === "c" || stored.units === "f") settings.units = stored.units;
   if (REFRESH_OPTIONS.includes(Number(stored.interval))) {
     settings.interval = Number(stored.interval);
@@ -415,6 +418,122 @@ async function loadStatus() {
   }
 }
 
+/* Codex usage --------------------------------------------------------- */
+
+function fmtTokens(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return "—";
+  if (number >= 1e9) return `${(number / 1e9).toFixed(1).replace(/\.0$/, "")}B`;
+  if (number >= 1e6) return `${(number / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+  if (number >= 1e3) return `${(number / 1e3).toFixed(1).replace(/\.0$/, "")}k`;
+  return Math.round(number).toLocaleString();
+}
+
+function resetLabel(epochSeconds) {
+  const reset = Number(epochSeconds);
+  if (!Number.isFinite(reset)) return "";
+  const minutes = Math.round((reset * 1000 - Date.now()) / 60000);
+  if (minutes <= 0) return "reset time passed";
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `in ${days}d ${hours}h`;
+  if (hours > 0) return `in ${hours}h ${mins}m`;
+  return `in ${mins}m`;
+}
+
+function limitTitle(minutes) {
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return "Usage limit";
+  if (value === 300) return "5-hour limit";
+  if (value === 1440) return "Daily limit";
+  if (value === 10080) return "Weekly limit";
+  if (value % 1440 === 0) return `${value / 1440}-day limit`;
+  if (value >= 60) return `${Math.round(value / 60)}-hour limit`;
+  return `${value}-minute limit`;
+}
+
+function usageLimitRow(limit) {
+  const wrap = document.createElement("div");
+  wrap.className = "usage-limit";
+
+  const head = document.createElement("div");
+  head.className = "usage-limit__head";
+  const label = document.createElement("span");
+  label.textContent = limitTitle(limit.window_minutes);
+  const value = document.createElement("strong");
+  value.textContent = `${Math.round(limit.used_percent)}% used`;
+  head.append(label, value);
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const fill = document.createElement("div");
+  fill.className = "bar__fill";
+  setBar(fill, limit.used_percent);
+  bar.append(fill);
+  wrap.append(head, bar);
+
+  if (limit.resets_at) {
+    const reset = document.createElement("p");
+    reset.className = "muted small";
+    const when = new Date(limit.resets_at * 1000);
+    const stamp = when.toLocaleString([], {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    reset.textContent = `resets ${stamp} · ${resetLabel(limit.resets_at)}`;
+    wrap.append(reset);
+  }
+  return wrap;
+}
+
+function renderUsage(data) {
+  const body = $("usage-body");
+  const empty = $("usage-empty");
+  const limitsBox = $("usage-limits");
+  limitsBox.replaceChildren();
+
+  if (!data || !data.available) {
+    body.hidden = true;
+    empty.hidden = false;
+    empty.textContent = (data && data.reason) || "No Codex CLI usage found yet.";
+    $("usage-plan").textContent = "codex cli";
+    return;
+  }
+
+  body.hidden = false;
+  empty.hidden = true;
+
+  const plan = data.limits && data.limits.plan;
+  $("usage-plan").textContent = plan ? `codex cli · ${plan}` : "codex cli";
+  $("usage-today").textContent = fmtTokens(data.today && data.today.total);
+  $("usage-week").textContent = fmtTokens(data.week && data.week.total);
+  $("usage-month").textContent = fmtTokens(data.month && data.month.total);
+
+  const limits = [];
+  if (data.limits) {
+    if (data.limits.primary) limits.push(data.limits.primary);
+    if (data.limits.secondary) limits.push(data.limits.secondary);
+  }
+  for (const limit of limits) limitsBox.append(usageLimitRow(limit));
+
+  if (!limits.length) {
+    const note = document.createElement("p");
+    note.className = "muted small";
+    note.textContent = "No rate-limit snapshot in recent sessions.";
+    limitsBox.append(note);
+  }
+}
+
+async function loadUsage() {
+  try {
+    renderUsage(await fetchJson("/api/usage"));
+  } catch (error) {
+    renderUsage({ available: false, reason: `Usage unavailable — ${error.message}` });
+  }
+}
+
 /* Weather ------------------------------------------------------------- */
 
 function readLocation() {
@@ -575,10 +694,13 @@ window.addEventListener("resize", () => {
 
 loadStatus();
 loadWeather();
+loadUsage();
+setInterval(loadUsage, USAGE_INTERVAL);
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     loadStatus();
     loadWeather();
+    loadUsage();
   }
 });

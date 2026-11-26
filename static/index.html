@@ -138,6 +138,24 @@
         <p class="muted small" id="hermes-detail">—</p>
       </section>
 
+      <section class="card card--usage" data-widget="usage" aria-labelledby="usage-title">
+        <div class="card__head">
+          <h2 id="usage-title">Hermes usage</h2>
+          <span class="muted" id="usage-plan">codex cli</span>
+        </div>
+        <div id="usage-body">
+          <p class="metric">
+            <span id="usage-today">—</span><span class="unit">tokens today</span>
+          </p>
+          <dl class="facts usage-facts">
+            <div><dt>7 days</dt><dd id="usage-week">—</dd></div>
+            <div><dt>30 days</dt><dd id="usage-month">—</dd></div>
+          </dl>
+        </div>
+        <div class="usage-limits" id="usage-limits"></div>
+        <p class="muted small" id="usage-empty" hidden>No Codex CLI sessions found.</p>
+      </section>
+
       <section class="card" data-widget="system" aria-labelledby="system-title">
         <div class="card__head">
           <h2 id="system-title">System</h2>
@@ -172,6 +190,8 @@
               <select id="setting-theme">
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
+                <option value="cream">Cream · warm paper</option>
+                <option value="ink">Ink · black &amp; cream</option>
               </select>
             </label>
             <label class="row">

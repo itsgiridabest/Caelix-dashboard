@@ -14,6 +14,14 @@
   --track: rgba(255, 255, 255, 0.07);
   --radius: 14px;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  --accent-glow: rgba(53, 208, 186, 0.55);
+  --on-accent: #04241f;
+  --ok-text: #7cf5dd;
+  --ok-border: rgba(53, 208, 186, 0.5);
+  --ok-soft: rgba(53, 208, 186, 0.16);
+  --bad-text: #ffb3b3;
+  --bad-border: rgba(255, 107, 107, 0.5);
+  --bad-soft: rgba(255, 107, 107, 0.12);
   color-scheme: dark;
 }
 
@@ -32,7 +40,75 @@ body[data-theme="light"] {
   --input: #f7f9fc;
   --track: rgba(16, 32, 48, 0.09);
   --shadow: 0 8px 24px rgba(16, 32, 48, 0.08);
+  --accent-glow: rgba(15, 157, 138, 0.4);
+  --on-accent: #04241f;
+  --ok-text: #0f7a6c;
+  --ok-border: rgba(15, 157, 138, 0.45);
+  --ok-soft: rgba(15, 157, 138, 0.1);
+  --bad-text: #b02a2a;
+  --bad-border: rgba(197, 48, 48, 0.4);
+  --bad-soft: rgba(197, 48, 48, 0.08);
   color-scheme: light;
+}
+
+body[data-theme="cream"] {
+  --bg: #efe7d7;
+  --panel: #faf5ea;
+  --panel-2: #fdf9f1;
+  --border: #ded2bd;
+  --text: #191610;
+  --muted: #6f6552;
+  --accent: #1b1812;
+  --accent-soft: rgba(27, 24, 18, 0.09);
+  --accent-glow: rgba(27, 24, 18, 0.22);
+  --info: #7d6a4a;
+  --warn: #a15a1c;
+  --danger: #a02c21;
+  --input: #f4edde;
+  --track: rgba(27, 24, 18, 0.06);
+  --shadow: 0 12px 30px rgba(74, 60, 38, 0.1);
+  --on-accent: #f8f2e6;
+  --ok-text: #46552b;
+  --ok-border: rgba(70, 85, 43, 0.45);
+  --ok-soft: rgba(70, 85, 43, 0.1);
+  --bad-text: #8f2c22;
+  --bad-border: rgba(143, 44, 34, 0.4);
+  --bad-soft: rgba(143, 44, 34, 0.08);
+  color-scheme: light;
+  background:
+    radial-gradient(1100px 600px at 8% -10%, rgba(255, 251, 240, 0.9), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(180, 158, 120, 0.16), transparent 55%),
+    var(--bg);
+}
+
+body[data-theme="ink"] {
+  --bg: #0b0a08;
+  --panel: #14120e;
+  --panel-2: #1b1813;
+  --border: #2c2820;
+  --text: #f2ead9;
+  --muted: #a79c86;
+  --accent: #eadfc8;
+  --accent-soft: rgba(234, 223, 200, 0.12);
+  --accent-glow: rgba(234, 223, 200, 0.35);
+  --info: #b8a888;
+  --warn: #e0a44f;
+  --danger: #ef8f7e;
+  --input: #100e0b;
+  --track: rgba(242, 234, 217, 0.07);
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --on-accent: #14110c;
+  --ok-text: #cfdcaa;
+  --ok-border: rgba(207, 220, 170, 0.4);
+  --ok-soft: rgba(207, 220, 170, 0.1);
+  --bad-text: #f2a99a;
+  --bad-border: rgba(242, 169, 154, 0.4);
+  --bad-soft: rgba(242, 169, 154, 0.08);
+  color-scheme: dark;
+  background:
+    radial-gradient(1200px 600px at 12% -10%, rgba(234, 223, 200, 0.07), transparent 60%),
+    radial-gradient(900px 500px at 105% 0%, rgba(160, 140, 100, 0.06), transparent 55%),
+    var(--bg);
 }
 
 * {
@@ -133,7 +209,7 @@ h2 {
   height: 12px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 5px var(--accent-soft), 0 0 18px rgba(53, 208, 186, 0.55);
+  box-shadow: 0 0 0 5px var(--accent-soft), 0 0 18px var(--accent-glow);
 }
 
 .brand__tag {
@@ -305,7 +381,7 @@ button {
   border-radius: 9px;
   border: 1px solid transparent;
   background: var(--accent);
-  color: #04241f;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
@@ -444,23 +520,67 @@ dd {
 }
 
 .pill--ok {
-  color: #0f9d8a;
-  border-color: rgba(53, 208, 186, 0.5);
-  background: var(--accent-soft);
+  color: var(--ok-text);
+  border-color: var(--ok-border);
+  background: var(--ok-soft);
 }
 
 .pill--bad {
-  color: #c53030;
-  border-color: rgba(255, 107, 107, 0.5);
-  background: rgba(255, 107, 107, 0.12);
+  color: var(--bad-text);
+  border-color: var(--bad-border);
+  background: var(--bad-soft);
 }
 
-body[data-theme="dark"] .pill--ok {
-  color: #7cf5dd;
+/* Usage --------------------------------------------------------------- */
+
+.card--usage {
+  grid-column: span 2;
 }
 
-body[data-theme="dark"] .pill--bad {
-  color: #ffb3b3;
+.usage-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0;
+}
+
+.usage-facts dd {
+  font-size: 1.05rem;
+}
+
+.usage-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.usage-limit__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.usage-limit__head strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-limit .bar {
+  height: 6px;
+  margin-top: 0;
+}
+
+.usage-limit p {
+  margin: 4px 0 0;
+}
+
+@media (max-width: 620px) {
+  .card--usage {
+    grid-column: span 1;
+  }
 }
 
 /* Settings dialog ----------------------------------------------------- */
@@ -626,7 +746,7 @@ select {
 
 button.primary {
   background: var(--accent);
-  color: #04241f;
+  color: var(--on-accent);
   border: 1px solid transparent;
   border-radius: 9px;
   padding: 8px 20px;
