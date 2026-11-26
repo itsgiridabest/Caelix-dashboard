@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Caelix Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <h1>Caelix</h1>
+        <span class="brand__tag">UNO Q</span>
+      </div>
+      <div class="topbar__meta">
+        <span class="chip" id="hostname">—</span>
+        <span class="muted" id="updated">connecting…</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card card--weather" aria-labelledby="weather-title">
+        <div class="card__head">
+          <h2 id="weather-title">Weather</h2>
+          <button type="button" class="link-button" id="weather-change" hidden>Change</button>
+        </div>
+
+        <div id="weather-empty">
+          <p class="muted">
+            No location set. Weather is only requested after you enter one.
+          </p>
+          <form class="loc-form" id="weather-form">
+            <label class="visually-hidden" for="weather-query">City</label>
+            <input
+              id="weather-query"
+              name="q"
+              type="search"
+              placeholder="City, e.g. Berlin"
+              autocomplete="off"
+              maxlength="100"
+              required
+            />
+            <button type="submit">Set</button>
+          </form>
+          <p class="hint" id="weather-hint" role="status" aria-live="polite"></p>
+        </div>
+
+        <div id="weather-data" hidden>
+          <p class="weather__place" id="weather-place">—</p>
+          <div class="weather__main">
+            <span class="weather__icon" id="weather-icon" aria-hidden="true">☀️</span>
+            <div>
+              <p class="weather__temp">
+                <span id="weather-temp">—</span><span class="unit" id="weather-unit">°C</span>
+              </p>
+              <p class="muted" id="weather-desc">—</p>
+            </div>
+          </div>
+          <dl class="weather__facts">
+            <div><dt>Feels like</dt><dd id="weather-feels">—</dd></div>
+            <div><dt>Humidity</dt><dd id="weather-humidity">—</dd></div>
+            <div><dt>Wind</dt><dd id="weather-wind">—</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="cpu-title">
+        <div class="card__head">
+          <h2 id="cpu-title">CPU</h2>
+          <span class="muted" id="cpu-sub">—</span>
+        </div>
+        <p class="metric"><span id="cpu-value">—</span><span class="unit">%</span></p>
+        <div class="bar"><div class="bar__fill" id="cpu-bar" style="width: 0%"></div></div>
+      </section>
+
+      <section class="card" aria-labelledby="memory-title">
+        <div class="card__head">
+          <h2 id="memory-title">Memory</h2>
+          <span class="muted" id="memory-sub">—</span>
+        </div>
+        <p class="metric"><span id="memory-value">—</span><span class="unit">%</span></p>
+        <div class="bar"><div class="bar__fill" id="memory-bar" style="width: 0%"></div></div>
+      </section>
+
+      <section class="card" aria-labelledby="disk-title">
+        <div class="card__head">
+          <h2 id="disk-title">Disk</h2>
+          <span class="muted" id="disk-sub">—</span>
+        </div>
+        <p class="metric"><span id="disk-value">—</span><span class="unit">%</span></p>
+        <div class="bar"><div class="bar__fill" id="disk-bar" style="width: 0%"></div></div>
+      </section>
+
+      <section class="card" aria-labelledby="network-title">
+        <div class="card__head">
+          <h2 id="network-title">Network</h2>
+          <span class="muted" id="uptime">—</span>
+        </div>
+        <dl class="net">
+          <div>
+            <dt>Download</dt>
+            <dd><span id="net-down">—</span> <small class="muted" id="net-down-total"></small></dd>
+          </div>
+          <div>
+            <dt>Upload</dt>
+            <dd><span id="net-up">—</span> <small class="muted" id="net-up-total"></small></dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="hermes-title">
+        <div class="card__head">
+          <h2 id="hermes-title">Hermes gateway</h2>
+          <span class="pill pill--unknown" id="hermes-pill">checking…</span>
+        </div>
+        <p class="muted small" id="hermes-detail">—</p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      Local only · no AI calls · refreshes every 20&nbsp;s
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

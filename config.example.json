@@ -1,0 +1,6 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "hermes_unit": "hermes",
+  "hermes_process_match": "hermes"
+}

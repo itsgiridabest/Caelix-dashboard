@@ -1,0 +1,15 @@
+[Unit]
+Description=Caelix Dashboard (local status page)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/caelix-dashboard
+ExecStart=/usr/bin/python3 %h/caelix-dashboard/server.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
