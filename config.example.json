@@ -3,5 +3,6 @@
   "port": 8080,
   "hermes_unit": "hermes",
   "hermes_process_match": "hermes",
-  "codex_home": "~/.codex"
+  "codex_home": "~/.codex",
+  "media_dir": "media"
 }

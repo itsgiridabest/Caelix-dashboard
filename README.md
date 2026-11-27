@@ -3,11 +3,14 @@
 A small, private status page for the Arduino UNO Q. It runs on the board's Debian
 side and shows, in one screen:
 
-- current weather for a place you choose
-- CPU load, with a live two-minute sparkline
+- current weather for a place you choose, with the next six hours and sunrise/sunset
+- an analog clock with the date and board uptime
+- CPU load, with a live two-minute sparkline and per-core meters
 - memory use
-- disk space
+- disk space, read/write rates and history
 - network download/upload rates and history
+- the busiest processes by CPU or memory
+- a Theater card for videos and music from the board, or a file from your device
 - board/CPU temperature where the kernel exposes a sensor
 - board, OS and kernel details
 - whether the Hermes gateway is running
@@ -52,6 +55,7 @@ variables override it.
 | `hermes_unit` | `hermes` | systemd unit checked with `systemctl is-active`. |
 | `hermes_process_match` | `hermes` | Fallback: match against process command lines. |
 | `codex_home` / `CODEX_HOME` | `~/.codex` | Codex CLI home; its `sessions/` logs feed the usage card. |
+| `media_dir` / `CAELIX_MEDIA_DIR` | `media` | Folder served by the Theater card. Relative paths sit next to `server.py`. |
 
 ```bash
 cp config.example.json config.json   # optional, git-ignored
@@ -73,6 +77,21 @@ Settings live in the browser's `localStorage` (key `caelix.settings.v1`), so the
 are per device and are never written to the board. **Reset** restores the
 defaults; your weather location is kept until you press **Change** in the
 weather card.
+
+## Theater and media
+
+The Theater card plays video and audio in the browser. Two sources work:
+
+- **Board library** — put `.mp4`, `.webm`, `.mov`, `.mp3`, `.m4a`, `.wav` and
+  similar files in the `media/` folder next to `server.py` (or point
+  `media_dir` somewhere else). The card lists them at the bottom and streams
+  them with HTTP range support, so seeking works. This folder is git-ignored.
+- **This device** — press **Choose file** or drag a video/audio file onto the
+  player. It is opened locally with a blob URL and is never uploaded.
+
+The server only serves files directly inside the configured media folder, and
+only known audio/video extensions. It is still a local-only tool: keep the
+dashboard on loopback or a private network.
 
 ## Weather and location privacy
 
@@ -121,10 +140,12 @@ no authentication, so it must never be forwarded to the open internet.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/status` | Hostname, uptime, load, CPU (with history), memory, disk, network rates and history, temperature, system details, Hermes state |
+| `GET /api/status` | Hostname, uptime, load, CPU (overall, per-core, history), memory, disk space and I/O rates, network rates and history, top processes, temperature, system details, Hermes state |
 | `GET /api/usage` | Codex CLI token totals for today, 7 days and 30 days, plus the latest rate-limit snapshot (cached 60 s) |
-| `GET /api/weather?lat=&lon=` | Current conditions from Open-Meteo (cached 10 min) |
+| `GET /api/weather?lat=&lon=` | Current conditions, next six hours and sunrise/sunset from Open-Meteo (cached 10 min) |
 | `GET /api/geocode?q=` | City lookup, up to 5 matches |
+| `GET /api/media` | Video/audio files in the configured media folder |
+| `GET /media/<name>` | Media stream with byte-range support (for seeking) |
 
 The page itself is served from `static/` (`/`, `/styles.css`, `/app.js`).
 
@@ -136,20 +157,26 @@ static/index.html               dashboard markup
 static/styles.css               themed responsive styles
 static/app.js                   polling, rendering, charts, settings, location setup
 config.example.json             optional local settings
+media/                          optional videos/music for the Theater (git-ignored)
 systemd/caelix-dashboard.service  user unit for autostart
 ```
 
 ## Notes and limits
 
 - Single-user, local tool: no accounts, no authentication, no database.
-- Metrics are read from `/proc` and `statvfs`; CPU and network are sampled every
-  2 seconds, the page polls every 20 seconds.
-- Weather is the only outbound request, and only after a location is set.
+- Metrics are read from `/proc` and `statvfs`; CPU, per-core load, network, disk
+  I/O and the process list are sampled every 2 seconds, and the page polls every
+  20 seconds.
+- Weather is the only outbound request, and only after a location is set. The
+  Theater card never uploads anything; local files stay in the browser.
 - The usage card reads Codex CLI rollout files under `~/.codex/sessions` (or
   `CODEX_HOME`) locally and reports the last 30 days plus the latest rate-limit
   snapshot. If Hermes runs as another user, point `codex_home` at that user's
   `~/.codex`; nothing is sent off the board.
 - Restarting the service clears the in-memory weather/geocode cache and the
   sparkline history (the last ~3 minutes of samples).
+- Video playback depends on the codecs the viewing browser supports. MP4/H.264
+  and WebM are the safest choices. `.mkv` is not listed or served, so remux
+  those files to MP4 if needed.
 - Settings and the chosen weather location are stored in the browser, not on the
   board; clearing site data returns the dashboard to its defaults.

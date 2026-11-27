@@ -14,8 +14,10 @@ Standard library only. No AI/model calls. Binds to 127.0.0.1 by default.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -39,6 +41,7 @@ DEFAULTS = {
     "hermes_unit": "hermes",
     "hermes_process_match": "hermes",
     "codex_home": "~/.codex",
+    "media_dir": "media",
 }
 
 USER_AGENT = "CaelixDashboard/1.0 (local Arduino UNO Q dashboard)"
@@ -47,6 +50,28 @@ GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_TTL = 600
 GEOCODE_TTL = 86400
 CODEX_USAGE_TTL = 60
+
+VIDEO_EXTENSIONS = {".mp4", ".m4v", ".webm", ".ogv", ".ogg", ".mov"}
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".oga"}
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".ogv": "video/ogg",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+}
+
+CLOCK_TICKS = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+WHOLE_DISK = re.compile(r"^(?:[shvx]d[a-z]+|nvme\d+n\d+|mmcblk\d+)$")
 
 CONFIG = dict(DEFAULTS)
 SAMPLER: "Sampler | None" = None
@@ -74,7 +99,7 @@ def load_config() -> dict:
 # --------------------------------------------------------------------------
 
 class Sampler(threading.Thread):
-    """Samples CPU and network counters in the background every 2 seconds."""
+    """Samples CPU, network, disk and process counters every 2 seconds."""
 
     def __init__(self, interval: float = 2.0) -> None:
         super().__init__(name="caelix-sampler", daemon=True)
@@ -82,24 +107,45 @@ class Sampler(threading.Thread):
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.cpu_percent = 0.0
+        self.core_percent: list[float] = []
         self.rx_rate = 0.0
         self.tx_rate = 0.0
         self.rx_total = 0
         self.tx_total = 0
+        self.disk_read_rate = 0.0
+        self.disk_write_rate = 0.0
+        self.disk_read_total = 0
+        self.disk_write_total = 0
+        self.process_count = 0
+        self.processes: list[dict] = []
         self.cpu_history: deque = deque(maxlen=90)
         self.rx_history: deque = deque(maxlen=90)
         self.tx_history: deque = deque(maxlen=90)
+        self.disk_read_history: deque = deque(maxlen=90)
+        self.disk_write_history: deque = deque(maxlen=90)
 
     def stop(self) -> None:
         self._stop.set()
 
     @staticmethod
-    def _cpu_counters() -> tuple[int, int]:
+    def _cpu_snapshot() -> tuple[int, int, list[tuple[int, int]]]:
+        """Overall CPU counters plus one (total, idle) pair per logical core."""
+        total = idle = 0
+        cores: list[tuple[int, int]] = []
         with open("/proc/stat", encoding="ascii") as fh:
-            fields = fh.readline().split()[1:]
-        values = [int(value) for value in fields]
-        idle = values[3] + (values[4] if len(values) > 4 else 0)
-        return sum(values), idle
+            for line in fh:
+                if not line.startswith("cpu"):
+                    continue
+                parts = line.split()
+                name = parts[0]
+                values = [int(value) for value in parts[1:]]
+                core_idle = values[3] + (values[4] if len(values) > 4 else 0)
+                core_total = sum(values)
+                if name == "cpu":
+                    total, idle = core_total, core_idle
+                elif name[3:].isdigit():
+                    cores.append((core_total, core_idle))
+        return total, idle, cores
 
     @staticmethod
     def _net_counters() -> tuple[int, int]:
@@ -116,31 +162,89 @@ class Sampler(threading.Thread):
                 tx += int(fields[8])
         return rx, tx
 
+    @staticmethod
+    def _disk_counters() -> tuple[int, int]:
+        """Bytes read and written across physical disks (not partitions)."""
+        read_bytes = write_bytes = 0
+        with open("/proc/diskstats", encoding="ascii") as fh:
+            for line in fh:
+                fields = line.split()
+                if len(fields) < 10 or not WHOLE_DISK.match(fields[2]):
+                    continue
+                read_bytes += int(fields[5]) * 512
+                write_bytes += int(fields[9]) * 512
+        return read_bytes, write_bytes
+
+    @staticmethod
+    def _process_counters() -> dict[int, dict]:
+        processes: dict[int, dict] = {}
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                raw = Path("/proc", entry, "stat").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            end = raw.rfind(")")
+            if end < 0:
+                continue
+            rest = raw[end + 2 :].split()
+            if len(rest) < 20:
+                continue
+            try:
+                ticks = int(rest[11]) + int(rest[12])
+                start = int(rest[19])
+                resident = int(Path("/proc", entry, "statm").read_text().split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            comm = raw[:end]
+            name = comm[comm.find("(") + 1 :] or entry
+            processes[int(entry)] = {
+                "name": name,
+                "ticks": ticks,
+                "start": start,
+                "rss": resident * PAGE_SIZE,
+            }
+        return processes
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
                 "cpu_percent": self.cpu_percent,
+                "core_percent": list(self.core_percent),
                 "rx_rate": self.rx_rate,
                 "tx_rate": self.tx_rate,
                 "rx_total": self.rx_total,
                 "tx_total": self.tx_total,
+                "disk_read_rate": self.disk_read_rate,
+                "disk_write_rate": self.disk_write_rate,
+                "disk_read_total": self.disk_read_total,
+                "disk_write_total": self.disk_write_total,
+                "process_count": self.process_count,
+                "processes": list(self.processes),
                 "cpu_history": list(self.cpu_history),
                 "rx_history": list(self.rx_history),
                 "tx_history": list(self.tx_history),
+                "disk_read_history": list(self.disk_read_history),
+                "disk_write_history": list(self.disk_write_history),
             }
 
     def run(self) -> None:  # noqa: D102 - thread body
         try:
-            prev_total, prev_idle = self._cpu_counters()
+            prev_total, prev_idle, prev_cores = self._cpu_snapshot()
             prev_rx, prev_tx = self._net_counters()
+            prev_read, prev_write = self._disk_counters()
+            prev_procs = self._process_counters()
         except (OSError, ValueError) as exc:
             print(f"[caelix] could not read /proc counters: {exc}")
             return
         prev_time = time.monotonic()
         while not self._stop.wait(self.interval):
             try:
-                total, idle = self._cpu_counters()
+                total, idle, cores = self._cpu_snapshot()
                 rx, tx = self._net_counters()
+                disk_read, disk_write = self._disk_counters()
+                procs = self._process_counters()
             except (OSError, ValueError) as exc:
                 print(f"[caelix] sample failed: {exc}")
                 continue
@@ -148,19 +252,64 @@ class Sampler(threading.Thread):
             elapsed = max(now - prev_time, 1e-6)
             delta_total = total - prev_total
             delta_idle = idle - prev_idle
+
+            core_percent: list[float] = []
+            if len(cores) == len(prev_cores):
+                for (core_total, core_idle), (old_total, old_idle) in zip(cores, prev_cores):
+                    delta = core_total - old_total
+                    busy = delta - (core_idle - old_idle)
+                    core_percent.append(round(100.0 * busy / delta, 1) if delta > 0 else 0.0)
+
+            entries = []
+            for pid, info in procs.items():
+                before = prev_procs.get(pid)
+                cpu = 0.0
+                if (
+                    before
+                    and before["start"] == info["start"]
+                    and info["ticks"] >= before["ticks"]
+                ):
+                    cpu = 100.0 * (info["ticks"] - before["ticks"]) / (elapsed * CLOCK_TICKS)
+                entries.append(
+                    {
+                        "pid": pid,
+                        "name": info["name"],
+                        "cpu_percent": round(cpu, 1),
+                        "rss": info["rss"],
+                    }
+                )
+            top = {}
+            for item in sorted(entries, key=lambda entry: entry["cpu_percent"], reverse=True)[:8]:
+                top[item["pid"]] = item
+            for item in sorted(entries, key=lambda entry: entry["rss"], reverse=True)[:8]:
+                top[item["pid"]] = item
+            top_processes = sorted(
+                top.values(), key=lambda entry: entry["cpu_percent"], reverse=True
+            )
+
             with self._lock:
                 if delta_total > 0:
                     self.cpu_percent = round(
                         100.0 * (delta_total - delta_idle) / delta_total, 1
                     )
+                self.core_percent = core_percent
                 self.rx_rate = max(0.0, (rx - prev_rx) / elapsed)
                 self.tx_rate = max(0.0, (tx - prev_tx) / elapsed)
+                self.disk_read_rate = max(0.0, (disk_read - prev_read) / elapsed)
+                self.disk_write_rate = max(0.0, (disk_write - prev_write) / elapsed)
                 self.rx_total, self.tx_total = rx, tx
+                self.disk_read_total, self.disk_write_total = disk_read, disk_write
+                self.process_count = len(procs)
+                self.processes = top_processes
                 self.cpu_history.append(round(self.cpu_percent, 1))
                 self.rx_history.append(round(self.rx_rate, 1))
                 self.tx_history.append(round(self.tx_rate, 1))
-            prev_total, prev_idle = total, idle
+                self.disk_read_history.append(round(self.disk_read_rate, 1))
+                self.disk_write_history.append(round(self.disk_write_rate, 1))
+            prev_total, prev_idle, prev_cores = total, idle, cores
             prev_rx, prev_tx = rx, tx
+            prev_read, prev_write = disk_read, disk_write
+            prev_procs = procs
             prev_time = now
 
 
@@ -587,12 +736,45 @@ def fetch_weather(lat: float, lon: float) -> dict:
                 "wind_direction_10m",
             ]
         ),
+        "hourly": "temperature_2m,weather_code,precipitation_probability,is_day",
+        "daily": "sunrise,sunset",
+        "forecast_days": "2",
         "wind_speed_unit": "kmh",
         "timezone": "auto",
     }
     data = http_json(f"{WEATHER_URL}?{urllib.parse.urlencode(params)}")
     current = data.get("current") or {}
     units = data.get("current_units") or {}
+
+    hourly = data.get("hourly") or {}
+    times = hourly.get("time") or []
+    now_hour = str(current.get("time") or "")[:13]
+    forecast = []
+    for index, stamp in enumerate(times):
+        if not isinstance(stamp, str) or stamp[:13] < now_hour:
+            continue
+        values = hourly.get("temperature_2m") or []
+        codes = hourly.get("weather_code") or []
+        rain = hourly.get("precipitation_probability") or []
+        daylight = hourly.get("is_day") or []
+        if index >= len(values):
+            break
+        forecast.append(
+            {
+                "time": stamp,
+                "temperature": values[index],
+                "code": codes[index] if index < len(codes) else None,
+                "precipitation_probability": rain[index] if index < len(rain) else None,
+                "is_day": bool(daylight[index]) if index < len(daylight) else True,
+            }
+        )
+        if len(forecast) >= 6:
+            break
+
+    daily = data.get("daily") or {}
+    sunrise = (daily.get("sunrise") or [None])[0]
+    sunset = (daily.get("sunset") or [None])[0]
+
     return {
         "temperature": current.get("temperature_2m"),
         "apparent": current.get("apparent_temperature"),
@@ -605,6 +787,9 @@ def fetch_weather(lat: float, lon: float) -> dict:
         "time": current.get("time"),
         "temperature_unit": units.get("temperature_2m", "°C"),
         "wind_unit": units.get("wind_speed_10m", "km/h"),
+        "hourly": forecast,
+        "sunrise": sunrise,
+        "sunset": sunset,
     }
 
 
@@ -630,11 +815,79 @@ def fetch_geocode(query: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Local media library
+# --------------------------------------------------------------------------
+
+def media_root() -> Path:
+    raw = os.environ.get("CAELIX_MEDIA_DIR") or CONFIG.get("media_dir") or "media"
+    path = Path(os.path.expanduser(str(raw)))
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+def media_file(name: str) -> Path | None:
+    """Resolve one file inside the media folder, refusing anything outside it."""
+    if not name or "/" in name or "\\" in name:
+        return None
+    root = media_root()
+    candidate = (root / name).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if candidate.suffix.lower() not in MEDIA_EXTENSIONS or not candidate.is_file():
+        return None
+    return candidate
+
+
+def list_media() -> dict:
+    root = media_root()
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return {"available": False, "path": str(root), "items": []}
+    items = []
+    for entry in entries:
+        try:
+            if not entry.is_file() or entry.suffix.lower() not in MEDIA_EXTENSIONS:
+                continue
+            stats = entry.stat()
+        except OSError:
+            continue
+        suffix = entry.suffix.lower()
+        items.append(
+            {
+                "name": entry.name,
+                "url": "/media/" + urllib.parse.quote(entry.name),
+                "size": stats.st_size,
+                "kind": "video" if suffix in VIDEO_EXTENSIONS else "audio",
+                "modified": datetime.fromtimestamp(
+                    stats.st_mtime, timezone.utc
+                ).isoformat(timespec="seconds"),
+            }
+        )
+    items.sort(key=lambda item: item["name"].casefold())
+    return {"available": True, "path": str(root), "items": items}
+
+
+# --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
 def build_status() -> dict:
     sampler = SAMPLER.snapshot() if SAMPLER else {}
+    disk = read_disk()
+    disk.update(
+        {
+            "read_rate": round(sampler.get("disk_read_rate", 0.0), 1),
+            "write_rate": round(sampler.get("disk_write_rate", 0.0), 1),
+            "read_total": sampler.get("disk_read_total", 0),
+            "write_total": sampler.get("disk_write_total", 0),
+            "read_history": sampler.get("disk_read_history", []),
+            "write_history": sampler.get("disk_write_history", []),
+        }
+    )
     return {
         "ok": True,
         "hostname": socket.gethostname(),
@@ -644,10 +897,11 @@ def build_status() -> dict:
         "cpu": {
             "percent": sampler.get("cpu_percent", 0.0),
             "cores": os.cpu_count() or 1,
+            "core_percent": sampler.get("core_percent", []),
             "history": sampler.get("cpu_history", []),
         },
         "memory": read_memory(),
-        "disk": read_disk(),
+        "disk": disk,
         "network": {
             "rx_rate": round(sampler.get("rx_rate", 0.0), 1),
             "tx_rate": round(sampler.get("tx_rate", 0.0), 1),
@@ -655,6 +909,10 @@ def build_status() -> dict:
             "tx_total": sampler.get("tx_total", 0),
             "rx_history": sampler.get("rx_history", []),
             "tx_history": sampler.get("tx_history", []),
+        },
+        "processes": {
+            "count": sampler.get("process_count", 0),
+            "top": sampler.get("processes", []),
         },
         "temperature": read_temperature(),
         "system": read_system(),
@@ -676,6 +934,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802 - http.server API
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/media/"):
+            return self.handle_media(parsed.path[len("/media/") :])
         if not parsed.path.startswith("/api/"):
             return super().do_GET()
         query = urllib.parse.parse_qs(parsed.query)
@@ -684,6 +944,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(build_status())
             if parsed.path == "/api/usage":
                 return self.send_json(codex_usage())
+            if parsed.path == "/api/media":
+                return self.send_json(list_media())
             if parsed.path == "/api/weather":
                 return self.handle_weather(query)
             if parsed.path == "/api/geocode":
@@ -705,6 +967,68 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def handle_media(self, raw_name: str) -> None:
+        path = media_file(urllib.parse.unquote(raw_name))
+        if path is None:
+            return self.send_error(404, "Media not found")
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return self.send_error(404, "Media not found")
+        if size <= 0:
+            return self.send_error(404, "Media not found")
+
+        content_type = MEDIA_TYPES.get(path.suffix.lower()) or (
+            mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        )
+        start, end = 0, size - 1
+        status = 200
+        range_header = (self.headers.get("Range") or "").strip()
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+            if not match:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            first, second = match.groups()
+            if first:
+                start = int(first)
+                end = int(second) if second else size - 1
+            elif second:
+                start = max(0, size - int(second))
+                end = size - 1
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            end = min(end, size - 1)
+            status = 206
+
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+
+        remaining = length
+        try:
+            with path.open("rb") as handle:
+                handle.seek(start)
+                while remaining > 0:
+                    chunk = handle.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def handle_weather(self, query: dict) -> None:
         try:

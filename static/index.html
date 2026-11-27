@@ -72,6 +72,30 @@
             <div><dt>Humidity</dt><dd id="weather-humidity">—</dd></div>
             <div><dt>Wind</dt><dd id="weather-wind">—</dd></div>
           </dl>
+          <div class="forecast" id="weather-forecast" aria-label="Next few hours"></div>
+          <p class="sun-times muted small" id="weather-sun" hidden></p>
+        </div>
+      </section>
+
+      <section class="card card--clock" data-widget="clock" aria-labelledby="clock-title">
+        <div class="card__head">
+          <h2 id="clock-title">Clock</h2>
+          <span class="muted small" id="clock-zone">—</span>
+        </div>
+        <div class="clock">
+          <svg class="clock__face" viewBox="0 0 100 100" role="img" aria-label="Current local time">
+            <circle class="clock__ring" cx="50" cy="50" r="47"></circle>
+            <g id="clock-ticks"></g>
+            <line class="clock__hand clock__hand--hour" id="clock-hour" x1="50" y1="50" x2="50" y2="27"></line>
+            <line class="clock__hand clock__hand--minute" id="clock-minute" x1="50" y1="50" x2="50" y2="17"></line>
+            <line class="clock__hand clock__hand--second" id="clock-second" x1="50" y1="50" x2="50" y2="13"></line>
+            <circle class="clock__pin" cx="50" cy="50" r="2.6"></circle>
+          </svg>
+          <div class="clock__readout">
+            <p class="clock__time" id="clock-time">—</p>
+            <p class="muted small" id="clock-date">—</p>
+            <p class="clock__uptime muted small" id="clock-uptime">—</p>
+          </div>
         </div>
       </section>
 
@@ -83,6 +107,7 @@
         <p class="metric"><span id="cpu-value">—</span><span class="unit">%</span></p>
         <canvas class="spark" id="cpu-spark" height="46" aria-hidden="true"></canvas>
         <div class="bar"><div class="bar__fill" id="cpu-bar" style="width: 0%"></div></div>
+        <div class="core-grid" id="cpu-cores" aria-label="Per-core CPU usage"></div>
       </section>
 
       <section class="card" data-widget="memory" aria-labelledby="memory-title">
@@ -101,6 +126,11 @@
         </div>
         <p class="metric"><span id="disk-value">—</span><span class="unit">%</span></p>
         <div class="bar"><div class="bar__fill" id="disk-bar" style="width: 0%"></div></div>
+        <div class="io-row">
+          <span>R <strong id="disk-read">—</strong></span>
+          <span>W <strong id="disk-write">—</strong></span>
+        </div>
+        <canvas class="spark spark--sm" id="disk-spark" height="32" aria-hidden="true"></canvas>
       </section>
 
       <section class="card" data-widget="network" aria-labelledby="network-title">
@@ -154,6 +184,47 @@
         </div>
         <div class="usage-limits" id="usage-limits"></div>
         <p class="muted small" id="usage-empty" hidden>No Codex CLI sessions found.</p>
+      </section>
+
+      <section class="card card--processes" data-widget="processes" aria-labelledby="processes-title">
+        <div class="card__head">
+          <h2 id="processes-title">Processes</h2>
+          <div class="segmented" role="group" aria-label="Sort processes by">
+            <button type="button" class="segmented__button is-active" id="proc-sort-cpu" aria-pressed="true">CPU</button>
+            <button type="button" class="segmented__button" id="proc-sort-mem" aria-pressed="false">Memory</button>
+          </div>
+        </div>
+        <p class="muted small" id="process-count">—</p>
+        <div class="process-head" aria-hidden="true">
+          <span>Process</span><span>CPU</span><span>Mem</span>
+        </div>
+        <div class="process-list" id="process-list"></div>
+      </section>
+
+      <section class="card card--theater" data-widget="theater" aria-labelledby="theater-title">
+        <div class="card__head">
+          <h2 id="theater-title">Theater</h2>
+          <div class="theater__actions">
+            <span class="muted small" id="theater-source">local media</span>
+            <button type="button" class="file-button" id="theater-pick">Choose file</button>
+            <input type="file" id="theater-file" accept="video/*,audio/*" hidden />
+          </div>
+        </div>
+        <div class="theater__stage" id="theater-stage">
+          <video id="theater-video" controls playsinline preload="metadata" hidden></video>
+          <div class="theater__empty" id="theater-empty">
+            <span class="theater__badge" aria-hidden="true">▶</span>
+            <p class="theater__drop"><strong>Drop a video here</strong></p>
+            <p class="muted small">
+              Play something from this device, or add files to the board's <code>media/</code> folder.
+            </p>
+          </div>
+        </div>
+        <div class="theater__bar">
+          <p class="muted small" id="theater-now">No media selected</p>
+          <p class="muted small" id="theater-library-note">—</p>
+        </div>
+        <div class="theater__playlist" id="theater-playlist" hidden></div>
       </section>
 
       <section class="card" data-widget="system" aria-labelledby="system-title">

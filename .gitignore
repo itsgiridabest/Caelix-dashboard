@@ -1,6 +1,9 @@
 # Local overrides (host/port/Hermes unit) — never commit this file
 config.json
 
+# Local videos and music
+media/
+
 # Python
 __pycache__/
 *.py[cod]
